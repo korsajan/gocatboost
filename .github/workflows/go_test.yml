@@ -1,0 +1,46 @@
+name: Go
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.22.0'
+
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential wget make
+
+      - name: install CatBoost library
+        run: |
+          ARG_VERSION=1.2.5
+          wget https://github.com/catboost/catboost/releases/download/v${ARG_VERSION}/libcatboostmodel.so
+          sudo mv libcatboostmodel.so /usr/local/lib/
+          wget https://raw.githubusercontent.com/catboost/catboost/master/catboost/libs/model_interface/c_api.h
+          sudo mv c_api.h /usr/local/include/
+
+      - name: set up environment variables
+        run: |
+          echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf.d/catboost.conf
+          sudo ldconfig
+
+      - name: run tests
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
+        run: |
+          make test
