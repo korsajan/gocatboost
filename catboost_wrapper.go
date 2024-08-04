@@ -67,7 +67,7 @@ func (c *Catboost) SetPredictionType(pt PredictionType) error {
 	return nil
 }
 
-func (c *Catboost) FeaaturesCount() (int, int) {
+func (c *Catboost) FeaturesCount() (int, int) {
 	floats := C.GetFloatFeaturesCount(c.model)
 	categorical := C.GetCatFeaturesCount(c.model)
 	return int(floats), int(categorical)

@@ -14,7 +14,7 @@ func TestFromFile(t *testing.T) {
 	cb, err := FromFile(testModelPath)
 	require.NoError(t, err)
 
-	f, c := cb.FeaaturesCount()
+	f, c := cb.FeaturesCount()
 	assert.EqualValues(t, f, 1)
 	assert.EqualValues(t, c, 3)
 	cb.Close()
@@ -26,7 +26,7 @@ func TestFromBuffer(t *testing.T) {
 
 	cb, err := FromBuffer(b)
 	require.NoError(t, err)
-	f, c := cb.FeaaturesCount()
+	f, c := cb.FeaturesCount()
 	assert.EqualValues(t, f, 1)
 	assert.EqualValues(t, c, 3)
 	cb.Close()
