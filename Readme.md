@@ -27,39 +27,44 @@ if err != nil {
 }
 defer cb.Close()
 
+// single document
 result, err := cb.Predict([]float64{0.5, 1.5}, []string{"a", "d", "g"})
 
+// batch of documents, one CGO call for the whole batch
 results, err := cb.PredictBatch(
     [][]float64{{0.5, 1.5}, {0.3, 2.1}},
     [][]string{{"a", "d", "g"}, {"b", "e", "h"}},
 )
 ```
 
-## Benchmarks
+## Benchmarks vs mirecl/catboost-cgo
 
 CPU: AMD Ryzen 7 4800H (16 threads), Linux 6.8.0, Go 1.26, CatBoost 1.2.7.
+Flags: -benchtime=3s, -count=5, median of 5 runs.
 
-```
-BenchmarkFromFile-16                                      21249   112985 ns/op      8 B/op    1 allocs/op
-BenchmarkFromBuffer-16                                    23775   101318 ns/op      8 B/op    1 allocs/op
-BenchmarkPredict-16                                     1759825     1361 ns/op     24 B/op    1 allocs/op
-BenchmarkPredictCatStringAlloc/short/3-16               1759994     1359 ns/op     24 B/op    1 allocs/op
-BenchmarkPredictCatStringAlloc/long/3-16                1750573     1380 ns/op     24 B/op    1 allocs/op
-BenchmarkPredictParallel-16                            11076445      217 ns/op     24 B/op    1 allocs/op
-BenchmarkPredictBatch/docs=1-16                         1475469     1652 ns/op     24 B/op    3 allocs/op
-BenchmarkPredictBatch/docs=10-16                         363076     6593 ns/op    240 B/op    3 allocs/op
-BenchmarkPredictBatch/docs=100-16                         42525    57709 ns/op   2688 B/op    3 allocs/op
-BenchmarkPredictBatch/docs=1000-16                         4284   571084 ns/op  24576 B/op    3 allocs/op
-BenchmarkPredictBatchVsPredict/Batch/docs=10-16          353916     7014 ns/op    240 B/op    3 allocs/op
-BenchmarkPredictBatchVsPredict/Sequential/docs=10-16     172299    14299 ns/op    240 B/op   10 allocs/op
-BenchmarkPredictBatchVsPredict/Batch/docs=100-16          41966    57020 ns/op   2688 B/op    3 allocs/op
-BenchmarkPredictBatchVsPredict/Sequential/docs=100-16     17320   138242 ns/op   2400 B/op  100 allocs/op
-BenchmarkPredictBatchParallel/docs=1-16                 9765358      240 ns/op     24 B/op    3 allocs/op
-BenchmarkPredictBatchParallel/docs=100-16                299054     7602 ns/op   2688 B/op    3 allocs/op
-BenchmarkWithPredictionType-16                            22905   104170 ns/op      8 B/op    1 allocs/op
-```
+| Benchmark               | gocatboost | mirecl    | diff            |
+|-------------------------|-----------:|----------:|-----------------|
+| Predict (single)        | 1349 ns    | 1357 ns   | equal           |
+| PredictBatch docs=1     | 1483 ns    | 1780 ns   | ours 1.2x faster |
+| PredictBatch docs=10    | 3475 ns    | 6148 ns   | ours 1.8x faster |
+| PredictBatch docs=100   | 30.6 us    | 50.3 us   | ours 1.6x faster |
+| PredictBatch docs=1000  | 283 us     | 577 us    | ours 2.0x faster |
+| Predict (parallel)      | 240 ns     | 230 ns    | equal           |
 
-To reproduce: `make bench`
+| Allocations             | gocatboost      | mirecl          |
+|-------------------------|-----------------|-----------------|
+| PredictBatch (any size) | 1 alloc/op      | 1 alloc/op      |
+| Predict (single)        | 2 allocs, 32 B  | 2 allocs, 16 B  |
+
+Why PredictBatch is faster: the whole batch uses 4 flat C allocations regardless
+of document count (mirecl allocates per row), all C strings are freed in a single
+CGO call instead of one call per string, and predictions are written by CatBoost
+directly into the returned Go slice with no intermediate buffer or conversion loop.
+
+Note: mirecl takes float32 input, so float64 data must be converted before calling.
+This library takes float64 natively.
+
+To reproduce: `make bench-vs-mirecl`. Full suite: `make bench`.
 
 ## Documentation
 

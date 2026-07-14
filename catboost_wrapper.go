@@ -4,6 +4,11 @@ package gocatboost
 #cgo LDFLAGS: -L/usr/local/lib -lcatboostmodel
 #include "c_api.h"
 #include <stdlib.h>
+
+static void freeCStringArray(char **ptrs, size_t n) {
+	for (size_t i = 0; i < n; i++) free(ptrs[i]);
+	free(ptrs);
+}
 */
 import "C"
 import (
@@ -101,82 +106,74 @@ func (c *Catboost) PredictBatch(floatFeatures [][]float64, catFeatures [][]strin
 		}
 	}
 
-	floatPtrs := make([]*C.float, docCount)
-	defer func() {
-		for _, ptr := range floatPtrs {
-			C.free(unsafe.Pointer(ptr))
-		}
-	}()
-	for i, ff := range floatFeatures {
-		if floatFeaturesSize == 0 {
-			break
-		}
-		floatPtrs[i] = (*C.float)(C.malloc(C.size_t(floatFeaturesSize) * C.sizeof_float))
-		if floatPtrs[i] == nil {
-			return nil, fmt.Errorf("failed to allocate memory for floatFeatures[%d]", i)
-		}
-		cgoArray := (*[1 << 30]C.float)(unsafe.Pointer(floatPtrs[i]))[:floatFeaturesSize:floatFeaturesSize]
-		for j, v := range ff {
-			cgoArray[j] = C.float(v)
-		}
-	}
-
-	catPtrs := make([]**C.char, docCount)
-	defer func() {
-		for _, ptr := range catPtrs {
-			if ptr == nil {
-				continue
-			}
-			cgoArray := (*[1 << 30]*C.char)(unsafe.Pointer(ptr))[:catFeaturesSize:catFeaturesSize]
-			for _, s := range cgoArray {
-				C.free(unsafe.Pointer(s))
-			}
-			C.free(unsafe.Pointer(ptr))
-		}
-	}()
-	for i, cf := range catFeatures {
-		if catFeaturesSize == 0 {
-			break
-		}
-		catPtrs[i] = (**C.char)(C.malloc(C.size_t(catFeaturesSize) * C.size_t(unsafe.Sizeof(uintptr(0)))))
-		if catPtrs[i] == nil {
-			return nil, fmt.Errorf("failed to allocate memory for catFeatures[%d]", i)
-		}
-		cgoArray := (*[1 << 30]*C.char)(unsafe.Pointer(catPtrs[i]))[:catFeaturesSize:catFeaturesSize]
-		for j, s := range cf {
-			cgoArray[j] = C.CString(s)
-		}
-	}
-
-	result := (*C.double)(C.malloc(C.size_t(docCount) * C.sizeof_double))
-	if result == nil {
-		return nil, errors.New("failed to allocate memory for result")
-	}
-	defer C.free(unsafe.Pointer(result))
-
 	var floatPtrPtr **C.float
 	if floatFeaturesSize > 0 {
-		floatPtrPtr = (**C.float)(unsafe.Pointer(&floatPtrs[0]))
-	}
-	var catPtrPtr ***C.char
-	if catFeaturesSize > 0 {
-		catPtrPtr = (***C.char)(unsafe.Pointer(&catPtrs[0]))
+		allFloatVals := (*C.float)(C.malloc(C.size_t(docCount*floatFeaturesSize) * C.sizeof_float))
+		if allFloatVals == nil {
+			return nil, errors.New("failed to allocate memory for float features")
+		}
+		defer C.free(unsafe.Pointer(allFloatVals))
+
+		allFloats := unsafe.Slice(allFloatVals, docCount*floatFeaturesSize)
+		for i, ff := range floatFeatures {
+			base := i * floatFeaturesSize
+			for j, v := range ff {
+				allFloats[base+j] = C.float(v)
+			}
+		}
+
+		floatRowPtrs := (**C.float)(C.malloc(C.size_t(docCount) * C.size_t(unsafe.Sizeof((*C.float)(nil)))))
+		if floatRowPtrs == nil {
+			return nil, errors.New("failed to allocate memory for float row pointers")
+		}
+		defer C.free(unsafe.Pointer(floatRowPtrs))
+
+		rowPtrSlice := unsafe.Slice(floatRowPtrs, docCount)
+		for i := range docCount {
+			rowPtrSlice[i] = &allFloats[i*floatFeaturesSize]
+		}
+		floatPtrPtr = floatRowPtrs
 	}
 
+	var catPtrPtr ***C.char
+	if catFeaturesSize > 0 {
+		totalStrings := docCount * catFeaturesSize
+		allCatStrPtrs := (**C.char)(C.malloc(C.size_t(totalStrings) * C.size_t(unsafe.Sizeof((*C.char)(nil)))))
+		if allCatStrPtrs == nil {
+			return nil, errors.New("failed to allocate memory for cat string pointers")
+		}
+		defer C.freeCStringArray(allCatStrPtrs, C.size_t(totalStrings))
+
+		catStrSlice := unsafe.Slice(allCatStrPtrs, totalStrings)
+		for i, cf := range catFeatures {
+			base := i * catFeaturesSize
+			for j, s := range cf {
+				catStrSlice[base+j] = C.CString(s)
+			}
+		}
+
+		catRowPtrs := (***C.char)(C.malloc(C.size_t(docCount) * C.size_t(unsafe.Sizeof((**C.char)(nil)))))
+		if catRowPtrs == nil {
+			return nil, errors.New("failed to allocate memory for cat row pointers")
+		}
+		defer C.free(unsafe.Pointer(catRowPtrs))
+
+		catRowSlice := unsafe.Slice(catRowPtrs, docCount)
+		for i := range docCount {
+			catRowSlice[i] = &catStrSlice[i*catFeaturesSize]
+		}
+		catPtrPtr = catRowPtrs
+	}
+
+	predicts := make([]float64, docCount)
 	success := C.CalcModelPrediction(
 		c.model, C.size_t(docCount),
 		floatPtrPtr, C.size_t(floatFeaturesSize),
 		catPtrPtr, C.size_t(catFeaturesSize),
-		result, C.size_t(docCount),
+		(*C.double)(unsafe.Pointer(&predicts[0])), C.size_t(docCount),
 	)
 	if !bool(success) {
 		return nil, errorC()
-	}
-
-	predicts := make([]float64, docCount)
-	cgoResult := (*[1 << 30]C.double)(unsafe.Pointer(result))[:docCount:docCount]
-	for i := range cgoResult {
-		predicts[i] = float64(cgoResult[i])
 	}
 	return predicts, nil
 }
@@ -189,7 +186,7 @@ func (c *Catboost) predict(floatFeatures []float64, catFeatures []string) (float
 	}
 	defer C.free(unsafe.Pointer(floatC))
 
-	cgoArray := (*[1 << 30]C.float)(unsafe.Pointer(floatC))[:floatCSize:floatCSize]
+	cgoArray := unsafe.Slice(floatC, floatCSize)
 	for i, v := range floatFeatures {
 		cgoArray[i] = C.float(v)
 	}
@@ -209,25 +206,20 @@ func (c *Catboost) predict(floatFeatures []float64, catFeatures []string) (float
 		cCatFeaturesPtr = (**C.char)(unsafe.Pointer(&cCatFeatures[0]))
 	}
 
-	resultC := (*C.double)(C.malloc(C.sizeof_double))
-	if resultC == nil {
-		return 0, fmt.Errorf("failed to allocate memory for result")
-	}
-	defer C.free(unsafe.Pointer(resultC))
-
+	var result C.double
 	success := C.CalcModelPredictionSingle(
 		c.model,
 		floatC,
 		floatCSize,
 		cCatFeaturesPtr,
 		catFeaturesSize,
-		resultC,
+		&result,
 		1,
 	)
 	if !bool(success) {
 		return 0, errorC()
 	}
-	return float64(*resultC), nil
+	return float64(result), nil
 }
 
 func (c *Catboost) Close() {

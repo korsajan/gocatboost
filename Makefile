@@ -23,19 +23,26 @@ test: vet
 clean-cache:
 	$(GOCLEAN) -testcache
 
-
 bench:
 	$(LD_ENV) $(GOTEST) $(BENCH_FLAGS) ./...
+
 bench-cpu:
 	$(LD_ENV) $(GOTEST) $(BENCH_FLAGS) -cpuprofile=cpu.prof ./...
+
 bench-mem:
 	$(LD_ENV) $(GOTEST) $(BENCH_FLAGS) -memprofile=mem.prof ./...
+
 bench-trace:
 	$(LD_ENV) $(GOTEST) $(BENCH_FLAGS) -trace=trace.out ./...
+
 bench-save:
 	$(LD_ENV) $(GOTEST) $(BENCH_FLAGS) ./... | tee bench-baseline.txt
-bench-compare:
+
+bench-diff:
 	$(LD_ENV) $(GOTEST) $(BENCH_FLAGS) ./... > bench-new.txt
 	benchstat bench-baseline.txt bench-new.txt
 
-.PHONY: all test vet clean-cache bench bench-cpu bench-mem bench-trace bench-save bench-compare
+bench-vs-mirecl:
+	$(LD_ENV) $(GOTEST) -tags bench_compare $(BENCH_FLAGS) -bench=BenchmarkCompare ./...
+
+.PHONY: all test vet clean-cache bench bench-cpu bench-mem bench-trace bench-save bench-diff bench-vs-mirecl
