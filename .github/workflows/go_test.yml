@@ -44,3 +44,15 @@ jobs:
           LD_LIBRARY_PATH: /usr/local/lib
         run: |
           make test
+
+      - name: run tests with coverage
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
+        run: |
+          go test -coverprofile=coverage.out ./...
+
+      - name: upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          file: coverage.out
+          format: golang
