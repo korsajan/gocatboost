@@ -2,18 +2,29 @@ package gocatboost
 
 /*
 #cgo LDFLAGS: -L/usr/local/lib -lcatboostmodel
+#cgo noescape CalcModelPrediction
+#cgo nocallback CalcModelPrediction
+#cgo noescape CalcModelPredictionSingle
+#cgo nocallback CalcModelPredictionSingle
+#cgo noescape LoadFullModelFromBuffer
+#cgo nocallback LoadFullModelFromBuffer
+#cgo noescape LoadFullModelFromFile
+#cgo nocallback LoadFullModelFromFile
+#cgo noescape SetPredictionTypeString
+#cgo nocallback SetPredictionTypeString
+#cgo nocallback ModelCalcerCreate
+#cgo nocallback ModelCalcerDelete
+#cgo nocallback GetErrorString
+#cgo nocallback GetFloatFeaturesCount
+#cgo nocallback GetCatFeaturesCount
 #include "c_api.h"
 #include <stdlib.h>
-
-static void freeCStringArray(char **ptrs, size_t n) {
-	for (size_t i = 0; i < n; i++) free(ptrs[i]);
-	free(ptrs);
-}
 */
 import "C"
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"unsafe"
 )
 
@@ -106,63 +117,60 @@ func (c *Catboost) PredictBatch(floatFeatures [][]float64, catFeatures [][]strin
 		}
 	}
 
-	var floatPtrPtr **C.float
-	if floatFeaturesSize > 0 {
-		allFloatVals := (*C.float)(C.malloc(C.size_t(docCount*floatFeaturesSize) * C.sizeof_float))
-		if allFloatVals == nil {
-			return nil, errors.New("failed to allocate memory for float features")
-		}
-		defer C.free(unsafe.Pointer(allFloatVals))
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
 
-		allFloats := unsafe.Slice(allFloatVals, docCount*floatFeaturesSize)
+	var floatRows []*C.float
+	if floatFeaturesSize > 0 {
+		flat := make([]C.float, docCount*floatFeaturesSize)
+		pinner.Pin(&flat[0])
 		for i, ff := range floatFeatures {
 			base := i * floatFeaturesSize
 			for j, v := range ff {
-				allFloats[base+j] = C.float(v)
+				flat[base+j] = C.float(v)
 			}
 		}
-
-		floatRowPtrs := (**C.float)(C.malloc(C.size_t(docCount) * C.size_t(unsafe.Sizeof((*C.float)(nil)))))
-		if floatRowPtrs == nil {
-			return nil, errors.New("failed to allocate memory for float row pointers")
-		}
-		defer C.free(unsafe.Pointer(floatRowPtrs))
-
-		rowPtrSlice := unsafe.Slice(floatRowPtrs, docCount)
+		floatRows = make([]*C.float, docCount)
 		for i := range docCount {
-			rowPtrSlice[i] = &allFloats[i*floatFeaturesSize]
+			floatRows[i] = &flat[i*floatFeaturesSize]
 		}
-		floatPtrPtr = floatRowPtrs
 	}
 
-	var catPtrPtr ***C.char
+	var catRows []**C.char
 	if catFeaturesSize > 0 {
-		totalStrings := docCount * catFeaturesSize
-		allCatStrPtrs := (**C.char)(C.malloc(C.size_t(totalStrings) * C.size_t(unsafe.Sizeof((*C.char)(nil)))))
-		if allCatStrPtrs == nil {
-			return nil, errors.New("failed to allocate memory for cat string pointers")
-		}
-		defer C.freeCStringArray(allCatStrPtrs, C.size_t(totalStrings))
-
-		catStrSlice := unsafe.Slice(allCatStrPtrs, totalStrings)
-		for i, cf := range catFeatures {
-			base := i * catFeaturesSize
-			for j, s := range cf {
-				catStrSlice[base+j] = C.CString(s)
+		strPtrs := make([]*C.char, docCount*catFeaturesSize)
+		pinner.Pin(&strPtrs[0])
+		total := 0
+		for _, cf := range catFeatures {
+			for _, s := range cf {
+				total += len(s) + 1
 			}
 		}
-
-		catRowPtrs := (***C.char)(C.malloc(C.size_t(docCount) * C.size_t(unsafe.Sizeof((**C.char)(nil)))))
-		if catRowPtrs == nil {
-			return nil, errors.New("failed to allocate memory for cat row pointers")
+		buf := make([]byte, total)
+		pinner.Pin(&buf[0])
+		off, k := 0, 0
+		for _, cf := range catFeatures {
+			for _, s := range cf {
+				strPtrs[k] = (*C.char)(unsafe.Pointer(&buf[off]))
+				off += copy(buf[off:], s)
+				buf[off] = 0
+				off++
+				k++
+			}
 		}
-		defer C.free(unsafe.Pointer(catRowPtrs))
-
-		catRowSlice := unsafe.Slice(catRowPtrs, docCount)
+		catRows = make([]**C.char, docCount)
 		for i := range docCount {
-			catRowSlice[i] = &catStrSlice[i*catFeaturesSize]
+			catRows[i] = &strPtrs[i*catFeaturesSize]
 		}
-		catPtrPtr = catRowPtrs
+	}
+
+	var floatPtrPtr **C.float
+	if floatRows != nil {
+		floatPtrPtr = &floatRows[0]
+	}
+	var catPtrPtr ***C.char
+	if catRows != nil {
+		catPtrPtr = &catRows[0]
 	}
 
 	predicts := make([]float64, docCount)
@@ -179,40 +187,32 @@ func (c *Catboost) PredictBatch(floatFeatures [][]float64, catFeatures [][]strin
 }
 
 func (c *Catboost) predict(floatFeatures []float64, catFeatures []string) (float64, error) {
-	floatCSize := C.size_t(len(floatFeatures))
-	floatC := (*C.float)(C.malloc(C.sizeof_float * floatCSize))
-	if floatC == nil {
-		return 0, fmt.Errorf("failed to allocate memory for floatFeatures")
-	}
-	defer C.free(unsafe.Pointer(floatC))
-
-	cgoArray := unsafe.Slice(floatC, floatCSize)
+	floats := make([]C.float, len(floatFeatures))
 	for i, v := range floatFeatures {
-		cgoArray[i] = C.float(v)
+		floats[i] = C.float(v)
+	}
+	var floatsPtr *C.float
+	if len(floats) > 0 {
+		floatsPtr = &floats[0]
 	}
 
-	catFeaturesSize := C.size_t(len(catFeatures))
-	cCatFeatures := make([]*C.char, len(catFeatures))
-	for i, s := range catFeatures {
-		cCatFeatures[i] = C.CString(s)
-	}
-	defer func() {
-		for _, s := range cCatFeatures {
-			C.free(unsafe.Pointer(s))
-		}
-	}()
-	var cCatFeaturesPtr **C.char
-	if len(cCatFeatures) > 0 {
-		cCatFeaturesPtr = (**C.char)(unsafe.Pointer(&cCatFeatures[0]))
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+
+	var catPtrsPtr **C.char
+	if len(catFeatures) > 0 {
+		catPtrs := make([]*C.char, len(catFeatures))
+		pinCStrings(&pinner, catFeatures, catPtrs)
+		catPtrsPtr = &catPtrs[0]
 	}
 
 	var result C.double
 	success := C.CalcModelPredictionSingle(
 		c.model,
-		floatC,
-		floatCSize,
-		cCatFeaturesPtr,
-		catFeaturesSize,
+		floatsPtr,
+		C.size_t(len(floatFeatures)),
+		catPtrsPtr,
+		C.size_t(len(catFeatures)),
 		&result,
 		1,
 	)
@@ -240,4 +240,20 @@ func errorC() error {
 	errorString := C.GetErrorString()
 	message := C.GoString(errorString)
 	return errors.New(message)
+}
+
+func pinCStrings(pinner *runtime.Pinner, strs []string, ptrs []*C.char) {
+	total := 0
+	for _, s := range strs {
+		total += len(s) + 1
+	}
+	buf := make([]byte, total)
+	pinner.Pin(&buf[0])
+	off := 0
+	for i, s := range strs {
+		ptrs[i] = (*C.char)(unsafe.Pointer(&buf[off]))
+		off += copy(buf[off:], s)
+		buf[off] = 0
+		off++
+	}
 }
