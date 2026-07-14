@@ -28,14 +28,20 @@ import (
 	"unsafe"
 )
 
+// Option configures a Catboost model during construction.
 type Option func(*Catboost) error
 
+// WithPredictionType returns an Option that sets the prediction type
+// applied by Predict and PredictBatch.
 func WithPredictionType(pt PredictionType) Option {
 	return func(c *Catboost) error {
 		return c.SetPredictionType(pt)
 	}
 }
 
+// Catboost is a loaded CatBoost model handle. It is safe for
+// concurrent use by multiple goroutines. Callers must release the
+// underlying C model with Close.
 type Catboost struct {
 	model unsafe.Pointer
 }
@@ -44,6 +50,8 @@ func makeCatboost() *Catboost {
 	return &Catboost{model: C.ModelCalcerCreate()}
 }
 
+// FromBuffer loads a CatBoost model from an in-memory model file
+// representation, such as the contents of a .cbm file.
 func FromBuffer(b []byte, opts ...Option) (*Catboost, error) {
 	cb := makeCatboost()
 
@@ -60,6 +68,7 @@ func FromBuffer(b []byte, opts ...Option) (*Catboost, error) {
 	return cb, nil
 }
 
+// FromFile loads a CatBoost model from a .cbm file on disk.
 func FromFile(modelPath string, opts ...Option) (*Catboost, error) {
 	cb := makeCatboost()
 	cPath := C.CString(modelPath)
@@ -78,6 +87,8 @@ func FromFile(modelPath string, opts ...Option) (*Catboost, error) {
 	return cb, nil
 }
 
+// SetPredictionType sets the prediction type applied by Predict and
+// PredictBatch.
 func (c *Catboost) SetPredictionType(pt PredictionType) error {
 	cStr := C.CString(pt.String())
 	defer C.free(unsafe.Pointer(cStr))
@@ -87,16 +98,23 @@ func (c *Catboost) SetPredictionType(pt PredictionType) error {
 	return nil
 }
 
+// FeaturesCount returns the number of float and categorical features
+// the model expects.
 func (c *Catboost) FeaturesCount() (int, int) {
 	floats := C.GetFloatFeaturesCount(c.model)
 	categorical := C.GetCatFeaturesCount(c.model)
 	return int(floats), int(categorical)
 }
 
+// Predict returns the model prediction for a single document described
+// by its float and categorical features.
 func (c *Catboost) Predict(floatFeatures []float64, catFeatures []string) (float64, error) {
 	return c.predict(floatFeatures, catFeatures)
 }
 
+// PredictBatch returns model predictions for a batch of documents in a
+// single CGO call. Every row of floatFeatures must have the same
+// length, and likewise for catFeatures.
 func (c *Catboost) PredictBatch(floatFeatures [][]float64, catFeatures [][]string) ([]float64, error) {
 	docCount := len(floatFeatures)
 	if docCount == 0 {
@@ -222,6 +240,8 @@ func (c *Catboost) predict(floatFeatures []float64, catFeatures []string) (float
 	return float64(result), nil
 }
 
+// Close releases the underlying C model. The Catboost value must not
+// be used after Close.
 func (c *Catboost) Close() {
 	C.ModelCalcerDelete(c.model)
 	c.model = nil
