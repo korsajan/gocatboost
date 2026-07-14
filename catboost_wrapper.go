@@ -2,6 +2,21 @@ package gocatboost
 
 /*
 #cgo LDFLAGS: -L/usr/local/lib -lcatboostmodel
+#cgo noescape CalcModelPrediction
+#cgo nocallback CalcModelPrediction
+#cgo noescape CalcModelPredictionSingle
+#cgo nocallback CalcModelPredictionSingle
+#cgo noescape LoadFullModelFromBuffer
+#cgo nocallback LoadFullModelFromBuffer
+#cgo noescape LoadFullModelFromFile
+#cgo nocallback LoadFullModelFromFile
+#cgo noescape SetPredictionTypeString
+#cgo nocallback SetPredictionTypeString
+#cgo nocallback ModelCalcerCreate
+#cgo nocallback ModelCalcerDelete
+#cgo nocallback GetErrorString
+#cgo nocallback GetFloatFeaturesCount
+#cgo nocallback GetCatFeaturesCount
 #include "c_api.h"
 #include <stdlib.h>
 */
@@ -9,6 +24,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"unsafe"
 )
 
@@ -101,133 +117,109 @@ func (c *Catboost) PredictBatch(floatFeatures [][]float64, catFeatures [][]strin
 		}
 	}
 
-	floatPtrs := make([]*C.float, docCount)
-	defer func() {
-		for _, ptr := range floatPtrs {
-			C.free(unsafe.Pointer(ptr))
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+
+	var floatRows []*C.float
+	if floatFeaturesSize > 0 {
+		flat := make([]C.float, docCount*floatFeaturesSize)
+		pinner.Pin(&flat[0])
+		for i, ff := range floatFeatures {
+			base := i * floatFeaturesSize
+			for j, v := range ff {
+				flat[base+j] = C.float(v)
+			}
 		}
-	}()
-	for i, ff := range floatFeatures {
-		if floatFeaturesSize == 0 {
-			break
-		}
-		floatPtrs[i] = (*C.float)(C.malloc(C.size_t(floatFeaturesSize) * C.sizeof_float))
-		if floatPtrs[i] == nil {
-			return nil, fmt.Errorf("failed to allocate memory for floatFeatures[%d]", i)
-		}
-		cgoArray := (*[1 << 30]C.float)(unsafe.Pointer(floatPtrs[i]))[:floatFeaturesSize:floatFeaturesSize]
-		for j, v := range ff {
-			cgoArray[j] = C.float(v)
+		floatRows = make([]*C.float, docCount)
+		for i := range docCount {
+			floatRows[i] = &flat[i*floatFeaturesSize]
 		}
 	}
 
-	catPtrs := make([]**C.char, docCount)
-	defer func() {
-		for _, ptr := range catPtrs {
-			if ptr == nil {
-				continue
+	var catRows []**C.char
+	if catFeaturesSize > 0 {
+		strPtrs := make([]*C.char, docCount*catFeaturesSize)
+		pinner.Pin(&strPtrs[0])
+		total := 0
+		for _, cf := range catFeatures {
+			for _, s := range cf {
+				total += len(s) + 1
 			}
-			cgoArray := (*[1 << 30]*C.char)(unsafe.Pointer(ptr))[:catFeaturesSize:catFeaturesSize]
-			for _, s := range cgoArray {
-				C.free(unsafe.Pointer(s))
+		}
+		buf := make([]byte, total)
+		pinner.Pin(&buf[0])
+		off, k := 0, 0
+		for _, cf := range catFeatures {
+			for _, s := range cf {
+				strPtrs[k] = (*C.char)(unsafe.Pointer(&buf[off]))
+				off += copy(buf[off:], s)
+				buf[off] = 0
+				off++
+				k++
 			}
-			C.free(unsafe.Pointer(ptr))
 		}
-	}()
-	for i, cf := range catFeatures {
-		if catFeaturesSize == 0 {
-			break
-		}
-		catPtrs[i] = (**C.char)(C.malloc(C.size_t(catFeaturesSize) * C.size_t(unsafe.Sizeof(uintptr(0)))))
-		if catPtrs[i] == nil {
-			return nil, fmt.Errorf("failed to allocate memory for catFeatures[%d]", i)
-		}
-		cgoArray := (*[1 << 30]*C.char)(unsafe.Pointer(catPtrs[i]))[:catFeaturesSize:catFeaturesSize]
-		for j, s := range cf {
-			cgoArray[j] = C.CString(s)
+		catRows = make([]**C.char, docCount)
+		for i := range docCount {
+			catRows[i] = &strPtrs[i*catFeaturesSize]
 		}
 	}
-
-	result := (*C.double)(C.malloc(C.size_t(docCount) * C.sizeof_double))
-	if result == nil {
-		return nil, errors.New("failed to allocate memory for result")
-	}
-	defer C.free(unsafe.Pointer(result))
 
 	var floatPtrPtr **C.float
-	if floatFeaturesSize > 0 {
-		floatPtrPtr = (**C.float)(unsafe.Pointer(&floatPtrs[0]))
+	if floatRows != nil {
+		floatPtrPtr = &floatRows[0]
 	}
 	var catPtrPtr ***C.char
-	if catFeaturesSize > 0 {
-		catPtrPtr = (***C.char)(unsafe.Pointer(&catPtrs[0]))
+	if catRows != nil {
+		catPtrPtr = &catRows[0]
 	}
 
+	predicts := make([]float64, docCount)
 	success := C.CalcModelPrediction(
 		c.model, C.size_t(docCount),
 		floatPtrPtr, C.size_t(floatFeaturesSize),
 		catPtrPtr, C.size_t(catFeaturesSize),
-		result, C.size_t(docCount),
+		(*C.double)(unsafe.Pointer(&predicts[0])), C.size_t(docCount),
 	)
 	if !bool(success) {
 		return nil, errorC()
-	}
-
-	predicts := make([]float64, docCount)
-	cgoResult := (*[1 << 30]C.double)(unsafe.Pointer(result))[:docCount:docCount]
-	for i := range cgoResult {
-		predicts[i] = float64(cgoResult[i])
 	}
 	return predicts, nil
 }
 
 func (c *Catboost) predict(floatFeatures []float64, catFeatures []string) (float64, error) {
-	floatCSize := C.size_t(len(floatFeatures))
-	floatC := (*C.float)(C.malloc(C.sizeof_float * floatCSize))
-	if floatC == nil {
-		return 0, fmt.Errorf("failed to allocate memory for floatFeatures")
-	}
-	defer C.free(unsafe.Pointer(floatC))
-
-	cgoArray := (*[1 << 30]C.float)(unsafe.Pointer(floatC))[:floatCSize:floatCSize]
+	floats := make([]C.float, len(floatFeatures))
 	for i, v := range floatFeatures {
-		cgoArray[i] = C.float(v)
+		floats[i] = C.float(v)
+	}
+	var floatsPtr *C.float
+	if len(floats) > 0 {
+		floatsPtr = &floats[0]
 	}
 
-	catFeaturesSize := C.size_t(len(catFeatures))
-	cCatFeatures := make([]*C.char, len(catFeatures))
-	for i, s := range catFeatures {
-		cCatFeatures[i] = C.CString(s)
-	}
-	defer func() {
-		for _, s := range cCatFeatures {
-			C.free(unsafe.Pointer(s))
-		}
-	}()
-	var cCatFeaturesPtr **C.char
-	if len(cCatFeatures) > 0 {
-		cCatFeaturesPtr = (**C.char)(unsafe.Pointer(&cCatFeatures[0]))
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+
+	var catPtrsPtr **C.char
+	if len(catFeatures) > 0 {
+		catPtrs := make([]*C.char, len(catFeatures))
+		pinCStrings(&pinner, catFeatures, catPtrs)
+		catPtrsPtr = &catPtrs[0]
 	}
 
-	resultC := (*C.double)(C.malloc(C.sizeof_double))
-	if resultC == nil {
-		return 0, fmt.Errorf("failed to allocate memory for result")
-	}
-	defer C.free(unsafe.Pointer(resultC))
-
+	var result C.double
 	success := C.CalcModelPredictionSingle(
 		c.model,
-		floatC,
-		floatCSize,
-		cCatFeaturesPtr,
-		catFeaturesSize,
-		resultC,
+		floatsPtr,
+		C.size_t(len(floatFeatures)),
+		catPtrsPtr,
+		C.size_t(len(catFeatures)),
+		&result,
 		1,
 	)
 	if !bool(success) {
 		return 0, errorC()
 	}
-	return float64(*resultC), nil
+	return float64(result), nil
 }
 
 func (c *Catboost) Close() {
@@ -248,4 +240,20 @@ func errorC() error {
 	errorString := C.GetErrorString()
 	message := C.GoString(errorString)
 	return errors.New(message)
+}
+
+func pinCStrings(pinner *runtime.Pinner, strs []string, ptrs []*C.char) {
+	total := 0
+	for _, s := range strs {
+		total += len(s) + 1
+	}
+	buf := make([]byte, total)
+	pinner.Pin(&buf[0])
+	off := 0
+	for i, s := range strs {
+		ptrs[i] = (*C.char)(unsafe.Pointer(&buf[off]))
+		off += copy(buf[off:], s)
+		buf[off] = 0
+		off++
+	}
 }
