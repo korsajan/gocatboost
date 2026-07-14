@@ -39,6 +39,13 @@ jobs:
           echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf.d/catboost.conf
           sudo ldconfig
 
+      - name: lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
+
       - name: run tests
         env:
           LD_LIBRARY_PATH: /usr/local/lib

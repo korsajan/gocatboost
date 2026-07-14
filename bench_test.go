@@ -9,7 +9,6 @@ import (
 var (
 	sinkFloat  float64
 	sinkFloats []float64
-	sinkCB     *Catboost
 	sinkErr    error
 )
 
