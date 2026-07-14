@@ -3,6 +3,18 @@
 Go wrapper for CatBoost inference via CGO bindings to the official C API.
 
 [![Go Tests](https://github.com/korsajan/gocatboost/actions/workflows/go_test.yml/badge.svg?branch=main)](https://github.com/korsajan/gocatboost/actions/workflows/go_test.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/korsajan/gocatboost.svg)](https://pkg.go.dev/github.com/korsajan/gocatboost)
+[![Linted by golangci-lint](https://img.shields.io/badge/linter-golangci--lint-brightgreen)](https://golangci-lint.run)
+[![Coverage Status](https://coveralls.io/repos/github/korsajan/gocatboost/badge.svg?branch=main)](https://coveralls.io/github/korsajan/gocatboost?branch=main)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+## Why gocatboost
+
+- Fast: every Predict and PredictBatch call crosses the CGO boundary exactly once,
+  with zero C heap allocations on the hot path (flat pinned Go buffers via runtime.Pinner)
+- Native float64 input, no manual conversion of your data to float32
+- Simple flat API: two methods cover single and batch inference
+- Thread safe: one loaded model serves all goroutines concurrently
 
 ## Install
 
